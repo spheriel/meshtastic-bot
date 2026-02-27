@@ -1,0 +1,26 @@
+[meshtastic]
+# Serial device pro Heltec připojený přes USB
+device = "/dev/ttyACM0"
+
+# Bot poslouchá i odpovídá POUZE na tomto channelIndex
+channel_index = 1
+
+[bot]
+# Prefix příkazů (můžeš nechat "!")
+command_prefix = "!"
+
+# Max délka jedné odpovědi (aby ses vešel do LoRa packetů)
+max_reply_len = 220
+
+# Mailbox: jak dlouho držet nedoručené zprávy (sekundy)
+mailbox_ttl_seconds = 604800  # 7 dní
+
+[weather]
+# Jednotky: "metric" nebo "imperial"
+units = "metric"
+
+# Jazyk popisku počasí (jen pro texty, Open-Meteo je ok)
+lang = "cs"
+
+# Default místo, když dáš jen !weather
+default_place = "Prague"
