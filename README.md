@@ -9,6 +9,9 @@ The bot listens and responds **only on a specific channel** (default
 custom‑frequency networks, and experimental mesh deployments.
 
 ------------------------------------------------------------------------
+## Installation
+    chmod +x install.sh
+    ./install.sh
 
 ## ✨ Features
 
