@@ -18,9 +18,7 @@ _orig_send = _pub.sendMessage
 
 def _sendMessage_compat(topicName, **msgData):
     """
-    meshtastic 2.7.7 často publikuje 'interface', ale PyPubSub topic specs
-    (a většina listenerů) očekává 'iface'. Přemapujeme to pro všechny eventy
-    začínající 'meshtastic.'.
+   meshtastic 2.7.7 often publishes interface, but PyPubSub topic specs (and most listeners) expect iface. We remap this for all events starting with meshtastic.
     """
     if isinstance(topicName, str) and topicName.startswith("meshtastic."):
         if "interface" in msgData and "iface" not in msgData:
