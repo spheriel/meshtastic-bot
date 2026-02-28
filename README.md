@@ -10,8 +10,13 @@ custom‑frequency networks, and experimental mesh deployments.
 
 ------------------------------------------------------------------------
 ## Installation
-    chmod +x install.sh
+    git clone https://github.com/spheriel/meshtastic-bot
+    cd meshtastic-bot
+    chmod u+x install.sh
     ./install.sh
+
+## Note
+    Autostart after reboot is enabled automatically.
 
 ## ✨ Features
 
