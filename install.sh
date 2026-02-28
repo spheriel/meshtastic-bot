@@ -127,3 +127,4 @@ echo "- User services start at boot only if your user session is started."
 echo "- For true 'start at boot even when not logged in', enable lingering:"
 echo "    sudo loginctl enable-linger $USER"
 sudo loginctl enable-linger $USER
+echo "lingering enabled"
