@@ -24,3 +24,7 @@ lang = "en"
 
 # Default location when user sends just !weather
 default_place = "Prague"
+
+[plugins]
+# Directory containing plugin modules (*.py). Relative paths are resolved from the bot working directory.
+dir = "plugins"
