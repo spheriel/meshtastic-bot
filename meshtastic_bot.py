@@ -5,6 +5,7 @@ import argparse
 import time
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -18,7 +19,9 @@ _orig_send = _pub.sendMessage
 
 def _sendMessage_compat(topicName, **msgData):
     """
-   meshtastic 2.7.7 often publishes interface, but PyPubSub topic specs (and most listeners) expect iface. We remap this for all events starting with meshtastic.
+    meshtastic 2.7.7 sometimes publishes 'interface', but PyPubSub topic specs
+    (and most listeners) expect 'iface'. We remap this for all events
+    starting with 'meshtastic.'.
     """
     if isinstance(topicName, str) and topicName.startswith("meshtastic."):
         if "interface" in msgData and "iface" not in msgData:
@@ -77,14 +80,118 @@ def fmt_pct(x: Any) -> str:
     if x is None:
         return "?"
     try:
-        # někdy je to int, někdy float, někdy string
         v = float(x)
-        # typicky stačí 1 desetinné místo
         if abs(v - round(v)) < 1e-9:
             return f"{int(round(v))}%"
         return f"{v:.1f}%"
     except Exception:
         return "?"
+
+
+# ----------------------------
+# Plugin system
+# ----------------------------
+
+class PluginLoadError(RuntimeError):
+    pass
+
+class PluginManager:
+    """
+    Loads plugins from a directory.
+
+    Plugin module contract:
+      - PLUGIN_NAME: str (optional, defaults to filename)
+      - COMMANDS: dict[str, dict] (required)
+
+    COMMANDS format:
+      COMMANDS = {
+        "roll": {
+          "help": "Roll a dice (default d6).",
+          "usage": "!roll [sides]",
+          "handler": callable(bot, packet, sender_key, args) -> Optional[str]
+        },
+        ...
+      }
+
+    Optional:
+      - register(bot): called once after load (for initialization / hooks)
+    """
+    def __init__(self, plugins_dir: Path):
+        self.plugins_dir = plugins_dir
+        self.plugins: Dict[str, Any] = {}
+        self.commands: Dict[str, Dict[str, Any]] = {}  # cmd -> spec
+
+    def load_all(self) -> None:
+        if not self.plugins_dir.exists():
+            return
+
+        for path in sorted(self.plugins_dir.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            self._load_one(path)
+
+    def _load_one(self, path: Path) -> None:
+        import importlib.util
+
+        module_name = f"meshtastic_bot_plugin_{path.stem}"
+        spec = importlib.util.spec_from_file_location(module_name, str(path))
+        if spec is None or spec.loader is None:
+            raise PluginLoadError(f"Cannot load plugin: {path.name}")
+
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        except Exception as e:
+            raise PluginLoadError(f"Plugin '{path.name}' failed to import: {type(e).__name__}: {e}") from e
+
+        plugin_name = getattr(mod, "PLUGIN_NAME", path.stem)
+        commands = getattr(mod, "COMMANDS", None)
+        if not isinstance(commands, dict) or not commands:
+            raise PluginLoadError(f"Plugin '{path.name}' missing COMMANDS dict")
+
+        # Validate and register commands
+        for cmd, spec in commands.items():
+            if not isinstance(cmd, str) or not cmd:
+                raise PluginLoadError(f"Plugin '{path.name}' has invalid command key")
+            if cmd.lower() in self.commands:
+                raise PluginLoadError(f"Duplicate command '{cmd}' from plugin '{plugin_name}'")
+            if not isinstance(spec, dict):
+                raise PluginLoadError(f"Command '{cmd}' in plugin '{plugin_name}' must be a dict")
+            if "handler" not in spec or not callable(spec["handler"]):
+                raise PluginLoadError(f"Command '{cmd}' in plugin '{plugin_name}' missing callable handler")
+            spec.setdefault("help", "")
+            spec.setdefault("usage", "")
+            spec["plugin"] = plugin_name
+            self.commands[cmd.lower()] = spec
+
+        self.plugins[plugin_name] = mod
+
+    def register_all(self, bot: "MeshBot") -> None:
+        for _name, mod in self.plugins.items():
+            reg = getattr(mod, "register", None)
+            if callable(reg):
+                reg(bot)
+
+    def help_lines(self, prefix: str) -> List[str]:
+        lines: List[str] = []
+        for cmd in sorted(self.commands.keys()):
+            spec = self.commands[cmd]
+            h = spec.get("help") or ""
+            if h:
+                lines.append(f"{prefix}{cmd} — {h}")
+            else:
+                lines.append(f"{prefix}{cmd}")
+        return lines
+
+    def dispatch(self, cmd: str, bot: "MeshBot", packet: Dict[str, Any], sender_key: str, args: List[str]) -> bool:
+        spec = self.commands.get(cmd.lower())
+        if not spec:
+            return False
+        handler = spec["handler"]
+        result = handler(bot, packet, sender_key, args)
+        if isinstance(result, str) and result.strip():
+            bot.send_channel(result)
+        return True
 
 
 # ----------------------------
@@ -101,6 +208,7 @@ class Config:
     weather_units: str
     weather_lang: str
     weather_default_place: str
+    plugins_dir: str
 
 def load_config(path: str) -> Config:
     if tomllib is None:
@@ -119,8 +227,11 @@ def load_config(path: str) -> Config:
 
     weather = raw.get("weather", {})
     weather_units = str(weather.get("units", "metric"))
-    weather_lang = str(weather.get("lang", "cs"))
+    weather_lang = str(weather.get("lang", "en"))
     weather_default_place = str(weather.get("default_place", "Prague"))
+
+    plugins = raw.get("plugins", {})
+    plugins_dir = str(plugins.get("dir", "plugins"))
 
     if weather_units not in ("metric", "imperial"):
         raise ValueError("weather.units must be 'metric' or 'imperial'")
@@ -134,6 +245,7 @@ def load_config(path: str) -> Config:
         weather_units=weather_units,
         weather_lang=weather_lang,
         weather_default_place=weather_default_place,
+        plugins_dir=plugins_dir,
     )
 
 
@@ -212,13 +324,13 @@ WMO_MAP = {
 def weather_text(code: Optional[int]) -> str:
     if code is None:
         return "unknown"
-    return WMO_MAP.get(int(code), f"kód {code}")
+    return WMO_MAP.get(int(code), f"code {code}")
 
 def fetch_weather(place: str, units: str) -> str:
     geo_url = "https://geocoding-api.open-meteo.com/v1/search"
     g = requests.get(
         geo_url,
-        params={"name": place, "count": 1, "language": "cs", "format": "json"},
+        params={"name": place, "count": 1, "language": "en", "format": "json"},
         timeout=10,
     )
     g.raise_for_status()
@@ -274,15 +386,36 @@ class MeshBot:
         self.mailbox = Mailbox(ttl_seconds=cfg.mailbox_ttl_seconds)
         self.iface = meshtastic.serial_interface.SerialInterface(devPath=cfg.device)
 
+        # Shared state for plugins (optional)
+        self.state: Dict[str, Any] = {
+            "started_ts": self.started_ts,
+            "counters": {"messages_seen": 0, "commands_executed": 0},
+            "seen": {},  # nodeKey -> ts
+        }
+
+        # Plugins
+        base = Path.cwd()
+        pdir = Path(self.cfg.plugins_dir)
+        resolved = pdir if pdir.is_absolute() else (base / pdir)
+        self.plugins = PluginManager(plugins_dir=resolved.resolve())
+        try:
+            self.plugins.load_all()
+            self.plugins.register_all(self)
+        except PluginLoadError as e:
+            # Non-fatal: keep core bot running even if plugins fail
+            print(f"[WARN] Plugin load error: {e}")
+
     def run(self):
         pub.subscribe(self.on_receive, "meshtastic.receive")
         pub.subscribe(self.on_connection, "meshtastic.connection.established")
         print(f"[+] Bot running. Device={self.cfg.device}, channelIndex={self.cfg.channel_index}")
+        if self.plugins.commands:
+            print(f"[+] Plugins loaded: {', '.join(sorted(self.plugins.plugins.keys()))}")
         try:
             while True:
                 time.sleep(3600)
         except KeyboardInterrupt:
-            print("\n[!] Končím…")
+            print("\n[!] Exiting…")
         finally:
             try:
                 self.iface.close()
@@ -342,15 +475,10 @@ class MeshBot:
                     pass
         return None
 
-    # -------- NEW: local airtime metrics (robust across versions) --------
+    # local airtime metrics (robust across versions)
     def get_local_airtime_metrics(self) -> Tuple[Optional[Any], Optional[Any], Optional[Any]]:
-        """
-        Returns (airUtilTx, airUtilRx, channelUtilization) for the local node.
-        Different versions store metrics differently, so we try multiple paths.
-        """
         candidates: List[Dict[str, Any]] = []
 
-        # 1) getMyNodeInfo (if available)
         try:
             mi = self.iface.getMyNodeInfo()
             if isinstance(mi, dict):
@@ -358,7 +486,6 @@ class MeshBot:
         except Exception:
             pass
 
-        # 2) localNode (some versions)
         try:
             ln = getattr(self.iface, "localNode", None)
             if isinstance(ln, dict):
@@ -366,11 +493,8 @@ class MeshBot:
         except Exception:
             pass
 
-        # 3) self.iface.nodes by local node key
         try:
             nodes = getattr(self.iface, "nodes", {}) or {}
-
-            # try nodeNum -> !xxxxxxxx
             my_node_num = None
             my_info = getattr(self.iface, "myInfo", None)
             if isinstance(my_info, dict):
@@ -385,32 +509,26 @@ class MeshBot:
                 except Exception:
                     pass
 
-            # fallback: if a node with user.isLocal exists
             for _k, v in nodes.items():
-                if safe_get(v, ["user", "isLocal"]) is True:
-                    if isinstance(v, dict):
-                        candidates.append(v)
-                        break
+                if safe_get(v, ["user", "isLocal"]) is True and isinstance(v, dict):
+                    candidates.append(v)
+                    break
         except Exception:
             pass
 
-        # extract metrics from candidates
         for c in candidates:
-            # most commonly deviceMetrics
             tx = safe_get(c, ["deviceMetrics", "airUtilTx"])
             rx = safe_get(c, ["deviceMetrics", "airUtilRx"])
             ch = safe_get(c, ["deviceMetrics", "channelUtilization"])
             if tx is not None or rx is not None or ch is not None:
                 return tx, rx, ch
 
-            # sometimes telemetry -> deviceMetrics
             tx = safe_get(c, ["telemetry", "deviceMetrics", "airUtilTx"])
             rx = safe_get(c, ["telemetry", "deviceMetrics", "airUtilRx"])
             ch = safe_get(c, ["telemetry", "deviceMetrics", "channelUtilization"])
             if tx is not None or rx is not None or ch is not None:
                 return tx, rx, ch
 
-            # sometimes in 'metrics' (less common)
             tx = safe_get(c, ["metrics", "airUtilTx"])
             rx = safe_get(c, ["metrics", "airUtilRx"])
             ch = safe_get(c, ["metrics", "channelUtilization"])
@@ -418,12 +536,13 @@ class MeshBot:
                 return tx, rx, ch
 
         return None, None, None
-    # --------------------------------------------------------------------
 
     # tolerant signature
     def on_receive(self, packet=None, iface=None, interface=None, **kwargs):
         if not isinstance(packet, dict):
             return
+
+        self.state["counters"]["messages_seen"] = int(self.state["counters"].get("messages_seen", 0)) + 1
 
         decoded = packet.get("decoded") or {}
         text = decoded.get("text")
@@ -432,7 +551,12 @@ class MeshBot:
         if ch is None or ch != self.cfg.channel_index:
             return
 
-        # mailbox delivery on any activity on channel 1
+        sender_key = packet.get("fromId") or packet.get("from")
+        if isinstance(sender_key, int):
+            sender_key = f"!{sender_key:08x}"
+        sender_key = str(sender_key) if sender_key is not None else "unknown"
+        self.state["seen"][sender_key] = now_ts()
+
         self.maybe_deliver_mailbox(packet)
 
         if not isinstance(text, str) or not text.strip():
@@ -441,11 +565,6 @@ class MeshBot:
         text = text.strip()
         if not text.startswith(self.cfg.command_prefix):
             return
-
-        sender_key = packet.get("fromId") or packet.get("from")
-        if isinstance(sender_key, int):
-            sender_key = f"!{sender_key:08x}"
-        sender_key = str(sender_key) if sender_key is not None else "unknown"
 
         cmdline = text[len(self.cfg.command_prefix):].strip()
         if not cmdline:
@@ -467,14 +586,19 @@ class MeshBot:
                 self.cmd_uptime()
             elif cmd == "weather":
                 self.cmd_weather(args)
-            elif cmd == "air":  # NEW
+            elif cmd == "air":
                 self.cmd_air()
             elif cmd == "msg":
                 self.cmd_msg(sender_key, args)
             elif cmd == "inbox":
                 self.cmd_inbox(sender_key)
             else:
-                self.send_channel(f"❓ Unknown command '{cmd}'. Try !help")
+                handled = self.plugins.dispatch(cmd, self, packet, sender_key, args)
+                if not handled:
+                    self.send_channel(f"❓ Unknown command '{cmd}'. Try !help")
+
+            self.state["counters"]["commands_executed"] = int(self.state["counters"].get("commands_executed", 0)) + 1
+
         except requests.RequestException as e:
             self.send_channel(f"❌ Network error: {type(e).__name__}")
         except Exception as e:
@@ -495,21 +619,32 @@ class MeshBot:
         dest_name = self.lookup_node_name(sender_key) or sender_key
         for m in pending:
             age = format_duration(now_ts() - m.created_ts)
-            self.send_channel(f"📮 For {dest_name}: from {m.from_display} ({age}): {m.text}")
+            self.send_channel(f"📮 For {dest_name}: from {m.from_display} ({age} old): {m.text}")
 
     # ----------------------------
-    # Commands
+    # Core commands
     # ----------------------------
 
     def cmd_help(self):
-        self.send_channel(
+        core = (
             "🤖 Commands: "
             "!help, !ping, !whoami, !nodes, !uptime, "
             "!weather [place], "
             "!air, "
-            "!msg <cílový_node|!hexid|shortName|longName> <text>, "
+            "!msg <node|!hexid|shortName|longName> <text>, "
             "!inbox"
         )
+
+        plugin_lines = self.plugins.help_lines(self.cfg.command_prefix)
+        if plugin_lines:
+            shown = plugin_lines[:6]
+            more = len(plugin_lines) - len(shown)
+            extra = "; ".join(shown)
+            if more > 0:
+                extra += f"; (+{more} more)"
+            self.send_channel(core + " | Plugins: " + extra)
+        else:
+            self.send_channel(core)
 
     def cmd_ping(self, packet: Dict[str, Any]):
         snr = packet.get("rxSnr")
@@ -531,10 +666,10 @@ class MeshBot:
         nodes = getattr(self.iface, "nodes", {}) or {}
         count = len(nodes)
         names: List[str] = []
-        for k, v in list(nodes.items())[:8]:
+        for _k, v in list(nodes.items())[:8]:
             short_name = safe_get(v, ["user", "shortName"])
             long_name = safe_get(v, ["user", "longName"])
-            nm = (short_name or long_name or str(k))
+            nm = (short_name or long_name or str(_k))
             names.append(str(nm))
         tail = (" | " + ", ".join(names)) if names else ""
         self.send_channel(f"📡 Nodes: {count}{tail}")
@@ -563,13 +698,13 @@ class MeshBot:
     def cmd_air(self):
         tx, rx, ch = self.get_local_airtime_metrics()
         if tx is None and rx is None and ch is None:
-            self.send_channel("📡 Airtime: metrics not available (enable telemetry on the node, or wait for an update).")
+            self.send_channel("📡 Airtime: metrics not available (enable telemetry or wait for update).")
             return
         self.send_channel(f"📡 Airtime: TX {fmt_pct(tx)} | RX {fmt_pct(rx)} | CH {fmt_pct(ch)}")
 
     def cmd_msg(self, sender_key: str, args: List[str]):
         if len(args) < 2:
-            self.send_channel("Usage: !msg <cílový_node|!hexid|shortName|longName> <text>")
+            self.send_channel("Usage: !msg <node|!hexid|shortName|longName> <text>")
             return
 
         target_token = args[0]
@@ -605,7 +740,7 @@ class MeshBot:
         lines = []
         for m in msgs[:3]:
             age = format_duration(now_ts() - m.created_ts)
-            lines.append(f"- od {m.from_display} ({age}): {clamp(m.text, 80)}")
+            lines.append(f"- from {m.from_display} ({age}): {clamp(m.text, 80)}")
         more = f" (+{len(msgs)-3} more)" if len(msgs) > 3 else ""
         self.send_channel("📬 Inbox:\n" + "\n".join(lines) + more)
 
