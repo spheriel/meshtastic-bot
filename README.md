@@ -18,106 +18,214 @@ custom‑frequency networks, and experimental mesh deployments.
 ## Note
     Autostart after reboot is enabled automatically.
 
-## ✨ Features
+# Features
 
--   `!help` --- command list\
--   `!ping` --- connectivity test (+ RSSI / SNR if available)\
--   `!whoami` --- identify sender node\
--   `!nodes` --- list known nodes\
--   `!uptime` --- bot + system uptime\
--   `!weather <city>` --- current weather\
--   `!msg <node> <text>` --- store‑and‑forward messaging\
--   `!inbox` --- retrieve waiting messages\
--   `!air` --- airtime + channel utilization stats
+### Core commands
+| Command | Description |
+|--------|-------------|
+!help | Show command list |
+!ping | Connectivity test |
+!whoami | Show your node ID |
+!nodes | List visible nodes |
+!uptime | Bot + system uptime |
+!weather [place] | Current weather |
+!air | Airtime usage metrics |
+!msg <node> <text> | Leave offline message |
+!inbox | Show stored messages |
 
-------------------------------------------------------------------------
+---
 
-## 📡 Airtime Metrics Explained
+### Plugin commands
+Plugins extend functionality automatically when placed inside the `plugins/` folder.
 
-`!air` returns:
+Included examples:
 
-  Metric   Meaning
-  -------- ----------------------------
-  TX       your node transmit airtime
-  RX       receive airtime
-  CH       total channel utilization
+#### Diagnostics plugin
+| Command | Description |
+|--------|-------------|
+!snr | Show SNR/RSSI |
+!route | Packet hop info |
+!seen | Last seen time |
+!load | Channel load status |
 
-------------------------------------------------------------------------
+#### Fun plugin
+| Command | Description |
+|--------|-------------|
+!roll [n] | Roll dice |
+!8ball | Magic 8‑ball |
+!stats | Bot statistics |
 
-## 🎯 Design Goals
+---
 
--   simple
--   stable
--   headless friendly
--   zero database
--   config‑file driven
--   safe for private mesh networks
+# Plugin System
 
-------------------------------------------------------------------------
+The bot automatically loads plugins from:
 
-## 🖥 Typical Setup
+```
+plugins/
+```
 
-Hardware: - Raspberry Pi - Meshtastic device - USB cable
+Each plugin is a `.py` file containing:
 
-Software: - Python 3.11+ - meshtastic - requests
+```
+COMMANDS = { ... }
+```
 
-------------------------------------------------------------------------
+Command handler signature:
 
-## ⚙ Configuration
+```
+def handler(bot, packet, sender_key, args):
+    return "response text"
+```
 
-Configured via:
+Optional:
 
-    config.toml
+```
+PLUGIN_NAME = "name"
+def register(bot): ...
+```
+
+Plugins are loaded at startup. No restart logic or registration needed.
+
+If a plugin fails to load, the bot continues running.
+
+---
+
+# Installation
+
+Clone repository:
+
+```
+git clone <repo>
+cd <repo>
+```
+
+Run installer:
+
+```
+./install.sh
+```
+
+Service commands:
+
+```
+systemctl --user status meshtastic-bot
+systemctl --user restart meshtastic-bot
+```
+
+Enable autostart:
+
+```
+sudo loginctl enable-linger $USER
+```
+
+---
+
+# Configuration
+
+Edit:
+
+```
+config.toml
+```
+
+Important settings:
+
+| Setting | Meaning |
+|--------|--------|
+device | serial port |
+channel_index | channel bot listens on |
+command_prefix | command symbol |
+max_reply_len | LoRa message limit |
+
+---
+
+# Versioning
+
+Releases follow semantic versioning:
+
+```
+MAJOR.MINOR.PATCH
+```
+
+Examples:
+
+- v1.0 → initial release
+- v1.1 → plugin system
+- v1.1.1 → bugfix
+
+Download specific version:
+
+```
+git checkout v1.0
+```
+
+---
+
+# Safety Notes
+
+The bot transmits over LoRa. Respect local duty‑cycle regulations.
+
+Airtime command:
+
+```
+!air
+```
+
+Shows:
+
+- TX %
+- RX %
+- Channel usage %
+
+---
+
+# Architecture
+
+Core bot handles:
+
+- radio interface
+- command parsing
+- mailbox
+- telemetry
+- plugin loader
+
+Plugins handle:
+
+- optional commands
+- extensions
+- experiments
+
+This separation keeps the core stable and extensible.
+
+---
+
+# Creating a Plugin
 
 Example:
 
-    device = "/dev/ttyACM0"
-    channel_index = 1
+```
+# plugins/hello.py
 
-------------------------------------------------------------------------
+def hello(bot, packet, sender, args):
+    return "Hello world"
 
-## 🚀 Run
+COMMANDS = {
+    "hello": {
+        "help": "Test command",
+        "handler": hello
+    }
+}
+```
 
-    python3 meshtastic_bot.py --config config.toml
+Restart bot → command available instantly.
 
-Recommended production run: systemd service.
+---
 
-------------------------------------------------------------------------
+# License
+See LICENSE file.
 
-## 🔒 Channel Isolation
+---
 
-Bot processes messages **only on configured channel index**, preventing
-accidental interaction with public mesh traffic.
-
-------------------------------------------------------------------------
-
-## 📜 Regulatory Notice
-
-Supports EU bands:
-
-  Band                Duty Cycle
-  ------------------- ------------
-  868 MHz default     1%
-  869.4--869.65 MHz   10%
-
-Always follow local radio regulations.
-
-------------------------------------------------------------------------
-
-## 🧪 Example Use Cases
-
--   private mesh assistant
--   diagnostics node
--   gateway monitor
--   field network helper
--   experimental high‑traffic node
-
-------------------------------------------------------------------------
-
-## 📄 License
-
-MIT.
-
-------------------------------------------------------------------------
-
-**Happy meshing 📡**
+# Author
+Created for Meshtastic community experimentation and private mesh networks.
