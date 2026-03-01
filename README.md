@@ -89,6 +89,13 @@ Install python prerequisites:
 ```
 sudo apt install -y python3 python3-venv python3-pip git
 ```
+
+Add user to the dialout group and reboot:
+```
+sudo usermod -aG dialout $USER
+reboot
+```
+
 Clone repository:
 
 ```
