@@ -9,14 +9,6 @@ The bot listens and responds **only on a specific channel** (default
 custom‑frequency networks, and experimental mesh deployments.
 
 ------------------------------------------------------------------------
-## Installation
-    git clone https://github.com/spheriel/meshtastic-bot
-    cd meshtastic-bot
-    chmod u+x install.sh
-    ./install.sh
-
-## Note
-    Autostart after reboot is enabled automatically.
 
 # Features
 
@@ -103,6 +95,7 @@ cd <repo>
 Run installer:
 
 ```
+chmod u+x install.sh
 ./install.sh
 ```
 
@@ -116,6 +109,7 @@ systemctl --user restart meshtastic-bot
 Enable autostart:
 
 ```
+Autostart after reboot should be enabled automatically. If not you can do it by:
 sudo loginctl enable-linger $USER
 ```
 
