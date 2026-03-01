@@ -85,6 +85,10 @@ If a plugin fails to load, the bot continues running.
 
 # Installation
 
+Install python prerequisites:
+```
+sudo apt install -y python3 python3-venv python3-pip git
+```
 Clone repository:
 
 ```
